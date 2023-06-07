@@ -481,40 +481,42 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.targetScrapeRequestErrors
 }
 
-func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config []string) (dbCount int, err error) {
-	if len(config)%2 != 0 {
+func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config map[string]string) (dbCount int, err error) {
+	if len(config) == 0 {
 		return 0, fmt.Errorf("invalid config: %#v", config)
 	}
 
-	for pos := 0; pos < len(config)/2; pos++ {
-		strKey := config[pos*2]
-		strVal := config[pos*2+1]
+	if config["databases"] != "" {
+		strVal := config["databases"]
+		if dbCount, err = strconv.Atoi(strVal); err != nil {
+			return 0, fmt.Errorf("invalid config value for key databases: %#v", strVal)
+		}
+	}
 
-		if strKey == "databases" {
-			if dbCount, err = strconv.Atoi(strVal); err != nil {
-				return 0, fmt.Errorf("invalid config value for key databases: %#v", strVal)
-			}
+	if e.options.InclConfigMetrics {
+		redact := map[string]bool{
+			"masterauth":               true,
+			"requirepass":              true,
+			"tls-key-file-pass":        true,
+			"tls-client-key-file-pass": true,
 		}
 
-		if e.options.InclConfigMetrics {
-			if redact := map[string]bool{
-				"masterauth":               true,
-				"requirepass":              true,
-				"tls-key-file-pass":        true,
-				"tls-client-key-file-pass": true,
-			}[strKey]; !redact || !e.options.RedactConfigMetrics {
+		for strKey, strVal := range config {
+			if !redact[strKey] || !e.options.RedactConfigMetrics {
 				e.registerConstMetricGauge(ch, "config_key_value", 1.0, strKey, strVal)
 				if val, err := strconv.ParseFloat(strVal, 64); err == nil {
 					e.registerConstMetricGauge(ch, "config_value", val, strKey)
 				}
 			}
 		}
+	}
 
-		if map[string]bool{
-			"io-threads": true,
-			"maxclients": true,
-			"maxmemory":  true,
-		}[strKey] {
+	for _, strKey := range []string{
+		"io-threads",
+		"maxclients",
+		"maxmemory",
+	} {
+		if strVal, ok := config[strKey]; ok {
 			if val, err := strconv.ParseFloat(strVal, 64); err == nil {
 				strKey = strings.ReplaceAll(strKey, "-", "_")
 				e.registerConstMetricGauge(ch, fmt.Sprintf("config_%s", strKey), val)
@@ -568,7 +570,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 	}
 
 	dbCount := 0
-	if config, err := redis.Strings(doRedisCmd(c, e.options.ConfigCommandName, "GET", "*")); err == nil {
+	if config, err := redis.StringMap(doRedisCmd(c, e.options.ConfigCommandName, "GET", "*")); err == nil {
 		log.Debugf("Redis CONFIG GET * result: [%#v]", config)
 		dbCount, err = e.extractConfigMetrics(ch, config)
 		if err != nil {
